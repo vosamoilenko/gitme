@@ -201,32 +201,42 @@ func cmdRemove() {
 		}
 	}
 
-	// Find and remove identity
-	found := false
-	newIdentities := []identity.Identity{}
-	for i, id := range cfg.Identities {
-		shouldRemove := false
-		if removeIndex >= 0 {
-			// Remove by index
-			shouldRemove = (i == removeIndex)
-		} else {
-			// Remove by email match
-			shouldRemove = (id.Email == arg || strings.Contains(id.Email, arg))
+	// If using partial match, first check how many match
+	if removeIndex < 0 {
+		var matches []int
+		for i, id := range cfg.Identities {
+			if id.Email == arg || strings.Contains(id.Email, arg) {
+				matches = append(matches, i)
+			}
 		}
 
-		if shouldRemove {
-			found = true
-			fmt.Println(successStyle.Render("Removed:"), id.Name, "<"+id.Email+">")
-			fmt.Println(dimStyle.Render("  was at: " + id.Source))
-		} else {
-			newIdentities = append(newIdentities, id)
+		if len(matches) == 0 {
+			fmt.Fprintf(os.Stderr, "No identity found matching: %s\n", arg)
+			fmt.Fprintf(os.Stderr, "Run 'gitme list' to see all identities\n")
+			os.Exit(1)
 		}
+
+		if len(matches) > 1 {
+			fmt.Fprintf(os.Stderr, "Multiple identities match '%s':\n\n", arg)
+			for _, idx := range matches {
+				id := cfg.Identities[idx]
+				fmt.Fprintf(os.Stderr, "  %d. %s <%s>\n", idx+1, id.Name, id.Email)
+			}
+			fmt.Fprintf(os.Stderr, "\nUse the number to remove a specific one: gitme rm %d\n", matches[0]+1)
+			os.Exit(1)
+		}
+
+		// Exactly one match
+		removeIndex = matches[0]
 	}
 
-	if !found {
-		fmt.Fprintf(os.Stderr, "Identity not found: %s\n", arg)
-		fmt.Fprintf(os.Stderr, "Run 'gitme list' to see all identities\n")
-		os.Exit(1)
+	// Remove the identity at removeIndex
+	removed := cfg.Identities[removeIndex]
+	newIdentities := append(cfg.Identities[:removeIndex], cfg.Identities[removeIndex+1:]...)
+
+	fmt.Println(successStyle.Render("Removed:"), removed.Name, "<"+removed.Email+">")
+	if removed.Source != "" {
+		fmt.Println(dimStyle.Render("  was at: " + removed.Source))
 	}
 
 	cfg.Identities = newIdentities

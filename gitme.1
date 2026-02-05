@@ -20,11 +20,15 @@ Launch interactive TUI to select an identity.
 .B gitme list\fR, \fBgitme ls
 List all known identities with their sources.
 .TP
+.B gitme repos
+Show all repositories and which identity each uses (local or global).
+.TP
 .B gitme add \fR[\fINAME\fR] [\fIEMAIL\fR]
 Add a new identity. If name and email are not provided, prompts interactively.
 .TP
-.B gitme remove \fIEMAIL\fR, \fBgitme rm \fIEMAIL
-Remove an identity by email (supports partial match).
+.B gitme remove \fINUMBER\fR|\fIEMAIL\fR, \fBgitme rm \fINUMBER\fR|\fIEMAIL
+Remove an identity by list number or partial email match.
+If partial match finds multiple identities, shows them and asks for specific number.
 .TP
 .B gitme scan\fR, \fBgitme refresh
 Rescan the machine for git identities. Keeps manually added identities.
@@ -60,6 +64,9 @@ Quit without making changes.
 .TP
 .I ~/.config/gitme/config.json
 Stores known identities and folder-to-identity mappings.
+.TP
+.I ~/.ssh/config
+Parsed to detect platform hosts (e.g., scl-gitlab -> GitLab).
 .SH IDENTITY DISCOVERY
 .B gitme
 automatically discovers identities from:
@@ -70,14 +77,32 @@ automatically discovers identities from:
 .IP \[bu]
 Included config files (via [include] directives)
 .IP \[bu]
-Local .git/config files in common directories (~/Developer, ~/Projects, etc.)
+Local .git/config files in workspace directories
+.IP \[bu]
+SSH config for platform detection (GitHub, GitLab, Bitbucket)
+.SH PLATFORM DETECTION
+Platforms are detected from:
+.IP \[bu] 2
+Email domain patterns (@users.noreply.github.com, etc.)
+.IP \[bu]
+Git remote URLs (github.com, gitlab.com, bitbucket.org)
+.IP \[bu]
+SSH config host aliases and hostnames
+.IP \[bu]
+Self-hosted GitLab instances (git.* domains)
 .SH EXAMPLES
 .TP
 List all identities:
 .B gitme ls
 .TP
+Show all repos and their identities:
+.B gitme repos
+.TP
 Add a work identity:
 .B gitme add "John Doe" "john@work.com"
+.TP
+Remove by number:
+.B gitme rm 3
 .TP
 Quick switch using partial email:
 .B gitme set work
