@@ -32,6 +32,8 @@ func main() {
 		cmdAdd()
 	case "remove", "rm":
 		cmdRemove()
+	case "scan", "refresh":
+		cmdScan()
 	case "current", "whoami":
 		cmdCurrent()
 	case "set":
@@ -49,16 +51,17 @@ func cmdHelp() {
 	fmt.Println(headerStyle.Render("gitme") + " - Git identity switcher")
 	fmt.Println()
 	fmt.Println("Usage:")
-	fmt.Println("  gitme              Interactive TUI to select identity")
+	fmt.Println("  gitme              Interactive TUI (enter=select, d=delete, r=rescan)")
 	fmt.Println("  gitme list         List all known identities")
 	fmt.Println("  gitme add          Add a new identity interactively")
 	fmt.Println("  gitme add <n> <e>  Add identity with name and email")
 	fmt.Println("  gitme remove <e>   Remove an identity by email")
+	fmt.Println("  gitme scan         Rescan machine for git identities")
 	fmt.Println("  gitme current      Show current identity for this folder")
 	fmt.Println("  gitme set <email>  Set identity by email (no TUI)")
 	fmt.Println("  gitme help         Show this help")
 	fmt.Println()
-	fmt.Println("Aliases: ls=list, rm=remove, whoami=current")
+	fmt.Println("Aliases: ls=list, rm=remove, whoami=current, refresh=scan")
 	fmt.Println()
 	fmt.Println("Config stored in: ~/.config/gitme/config.json")
 }
@@ -190,6 +193,57 @@ func cmdRemove() {
 	}
 }
 
+func cmdScan() {
+	fmt.Println("Scanning for git identities...")
+
+	// Clear existing identities and rescan
+	scanned, err := identity.Scan()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error scanning: %v\n", err)
+		os.Exit(1)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Keep manual identities, replace scanned ones
+	manualIdentities := []identity.Identity{}
+	for _, id := range cfg.Identities {
+		if id.Source == "manual" {
+			manualIdentities = append(manualIdentities, id)
+		}
+	}
+
+	// Start fresh with scanned + manual
+	cfg.Identities = scanned
+	for _, id := range manualIdentities {
+		// Add manual ones if not already found
+		found := false
+		for _, s := range scanned {
+			if s.Email == id.Email {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.Identities = append(cfg.Identities, id)
+		}
+	}
+
+	if err := cfg.Save(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println(successStyle.Render(fmt.Sprintf("Found %d identities", len(cfg.Identities))))
+	for _, id := range cfg.Identities {
+		fmt.Printf("  • %s <%s>\n", id.Name, id.Email)
+	}
+}
+
 func cmdCurrent() {
 	cwd, _ := os.Getwd()
 
@@ -304,23 +358,51 @@ func runTUI() {
 	}
 
 	m := finalModel.(ui.Model)
-	choice := m.Choice()
-	if choice == nil {
+
+	switch m.Action() {
+	case ui.ActionSelect:
+		choice := m.Choice()
+		if choice == nil {
+			os.Exit(0)
+		}
+		if err := applyIdentity(cwd, *choice); err != nil {
+			fmt.Fprintf(os.Stderr, "Error applying identity: %v\n", err)
+			os.Exit(1)
+		}
+		cfg.SetIdentityForFolder(cwd, *choice)
+		if err := cfg.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(successStyle.Render("Switched to:"), choice.Name, "<"+choice.Email+">")
+
+	case ui.ActionDelete:
+		target := m.DeleteTarget()
+		if target == nil {
+			os.Exit(0)
+		}
+		// Remove from config
+		newIdentities := []identity.Identity{}
+		for _, id := range cfg.Identities {
+			if id.Email != target.Email {
+				newIdentities = append(newIdentities, id)
+			}
+		}
+		cfg.Identities = newIdentities
+		if err := cfg.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(successStyle.Render("Deleted:"), target.Name, "<"+target.Email+">")
+
+	case ui.ActionRescan:
+		fmt.Println("Rescanning...")
+		cmdScan()
+
+	default:
+		// User quit without action
 		os.Exit(0)
 	}
-
-	if err := applyIdentity(cwd, *choice); err != nil {
-		fmt.Fprintf(os.Stderr, "Error applying identity: %v\n", err)
-		os.Exit(1)
-	}
-
-	cfg.SetIdentityForFolder(cwd, *choice)
-	if err := cfg.Save(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println(successStyle.Render("Switched to:"), choice.Name, "<"+choice.Email+">")
 }
 
 func applyIdentity(folder string, id identity.Identity) error {
