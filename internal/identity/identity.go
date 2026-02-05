@@ -8,11 +8,22 @@ import (
 	"strings"
 )
 
+// Platform represents the git hosting platform
+type Platform string
+
+const (
+	PlatformUnknown Platform = ""
+	PlatformGitHub  Platform = "github"
+	PlatformGitLab  Platform = "gitlab"
+	PlatformBitbucket Platform = "bitbucket"
+)
+
 // Identity represents a git identity
 type Identity struct {
-	Name   string
-	Email  string
-	Source string // where this identity was found
+	Name     string   `json:"name"`
+	Email    string   `json:"email"`
+	Source   string   `json:"source"`   // where this identity was found (full path)
+	Platform Platform `json:"platform"` // github, gitlab, etc.
 }
 
 // String returns a display string for the identity
@@ -20,12 +31,29 @@ func (i Identity) String() string {
 	return i.Name + " <" + i.Email + ">"
 }
 
+// DetectPlatform detects the platform from email
+func DetectPlatform(email string) Platform {
+	email = strings.ToLower(email)
+
+	// Check email domain patterns
+	if strings.Contains(email, "github") || strings.HasSuffix(email, "@users.noreply.github.com") {
+		return PlatformGitHub
+	}
+	if strings.Contains(email, "gitlab") {
+		return PlatformGitLab
+	}
+	if strings.Contains(email, "bitbucket") {
+		return PlatformBitbucket
+	}
+
+	return PlatformUnknown
+}
+
 // Scan finds all git identities on the machine
 func Scan() ([]Identity, error) {
 	var identities []Identity
 	seen := make(map[string]bool)
 
-	// Check global gitconfig
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -33,7 +61,7 @@ func Scan() ([]Identity, error) {
 
 	// Parse ~/.gitconfig
 	globalConfig := filepath.Join(home, ".gitconfig")
-	if id, err := parseGitConfig(globalConfig, "global"); err == nil && id != nil {
+	if id, err := parseGitConfig(globalConfig, globalConfig, ""); err == nil && id != nil {
 		key := id.Email
 		if !seen[key] {
 			identities = append(identities, *id)
@@ -43,7 +71,7 @@ func Scan() ([]Identity, error) {
 
 	// Parse ~/.config/git/config
 	xdgConfig := filepath.Join(home, ".config", "git", "config")
-	if id, err := parseGitConfig(xdgConfig, "xdg"); err == nil && id != nil {
+	if id, err := parseGitConfig(xdgConfig, xdgConfig, ""); err == nil && id != nil {
 		key := id.Email
 		if !seen[key] {
 			identities = append(identities, *id)
@@ -81,7 +109,7 @@ func Scan() ([]Identity, error) {
 	return identities, nil
 }
 
-func parseGitConfig(path, source string) (*Identity, error) {
+func parseGitConfig(path, source, repoPath string) (*Identity, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -113,7 +141,19 @@ func parseGitConfig(path, source string) (*Identity, error) {
 	}
 
 	if name != "" && email != "" {
-		return &Identity{Name: name, Email: email, Source: source}, nil
+		platform := DetectPlatform(email)
+
+		// If platform not detected from email, try to detect from remotes
+		if platform == PlatformUnknown && repoPath != "" {
+			platform = detectPlatformFromRemotes(repoPath)
+		}
+
+		return &Identity{
+			Name:     name,
+			Email:    email,
+			Source:   source,
+			Platform: platform,
+		}, nil
 	}
 	return nil, nil
 }
@@ -147,7 +187,7 @@ func scanIncludes(gitconfigPath string) ([]Identity, error) {
 			if strings.HasPrefix(includePath, "~") {
 				includePath = filepath.Join(home, includePath[1:])
 			}
-			if id, err := parseGitConfig(includePath, "include: "+filepath.Base(includePath)); err == nil && id != nil {
+			if id, err := parseGitConfig(includePath, includePath, ""); err == nil && id != nil {
 				identities = append(identities, *id)
 			}
 		}
@@ -176,8 +216,9 @@ func scanDirectory(dir string, maxDepth int, seen map[string]bool) ([]Identity, 
 		subdir := filepath.Join(dir, entry.Name())
 
 		// Check for .git/config
-		gitConfig := filepath.Join(subdir, ".git", "config")
-		if id, err := parseGitConfig(gitConfig, "repo: "+entry.Name()); err == nil && id != nil {
+		gitDir := filepath.Join(subdir, ".git")
+		gitConfig := filepath.Join(gitDir, "config")
+		if id, err := parseGitConfig(gitConfig, gitConfig, gitDir); err == nil && id != nil {
 			key := id.Email
 			if !seen[key] {
 				identities = append(identities, *id)
@@ -193,4 +234,32 @@ func scanDirectory(dir string, maxDepth int, seen map[string]bool) ([]Identity, 
 	}
 
 	return identities, nil
+}
+
+// detectPlatformFromRemotes checks git remotes to detect the platform
+func detectPlatformFromRemotes(gitDir string) Platform {
+	configPath := filepath.Join(gitDir, "config")
+	file, err := os.Open(configPath)
+	if err != nil {
+		return PlatformUnknown
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.ToLower(scanner.Text())
+		if strings.Contains(line, "url") {
+			if strings.Contains(line, "github.com") {
+				return PlatformGitHub
+			}
+			if strings.Contains(line, "gitlab.com") || strings.Contains(line, "gitlab") {
+				return PlatformGitLab
+			}
+			if strings.Contains(line, "bitbucket") {
+				return PlatformBitbucket
+			}
+		}
+	}
+
+	return PlatformUnknown
 }
