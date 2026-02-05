@@ -12,9 +12,9 @@ import (
 type Platform string
 
 const (
-	PlatformUnknown Platform = ""
-	PlatformGitHub  Platform = "github"
-	PlatformGitLab  Platform = "gitlab"
+	PlatformUnknown   Platform = ""
+	PlatformGitHub    Platform = "github"
+	PlatformGitLab    Platform = "gitlab"
 	PlatformBitbucket Platform = "bitbucket"
 )
 
@@ -35,7 +35,6 @@ func (i Identity) String() string {
 func DetectPlatform(email string) Platform {
 	email = strings.ToLower(email)
 
-	// Check email domain patterns
 	if strings.Contains(email, "github") || strings.HasSuffix(email, "@users.noreply.github.com") {
 		return PlatformGitHub
 	}
@@ -59,37 +58,15 @@ func Scan() ([]Identity, error) {
 		return nil, err
 	}
 
-	// Parse ~/.gitconfig
+	// Get global email first (needed to detect platform for repos that inherit it)
+	globalEmail := ""
 	globalConfig := filepath.Join(home, ".gitconfig")
 	if id, err := parseGitConfig(globalConfig, globalConfig, ""); err == nil && id != nil {
-		key := id.Email
-		if !seen[key] {
-			identities = append(identities, *id)
-			seen[key] = true
-		}
+		globalEmail = id.Email
 	}
 
-	// Parse ~/.config/git/config
-	xdgConfig := filepath.Join(home, ".config", "git", "config")
-	if id, err := parseGitConfig(xdgConfig, xdgConfig, ""); err == nil && id != nil {
-		key := id.Email
-		if !seen[key] {
-			identities = append(identities, *id)
-			seen[key] = true
-		}
-	}
-
-	// Scan for .gitconfig includes and conditional includes
-	includeIdentities, _ := scanIncludes(globalConfig)
-	for _, id := range includeIdentities {
-		key := id.Email
-		if !seen[key] {
-			identities = append(identities, id)
-			seen[key] = true
-		}
-	}
-
-	// Scan common workspace directories for local configs
+	// Scan all repos to build email -> platform mapping
+	emailPlatforms := make(map[string]Platform)
 	workspaceDirs := []string{
 		filepath.Join(home, "Developer"),
 		filepath.Join(home, "Projects"),
@@ -101,12 +78,133 @@ func Scan() ([]Identity, error) {
 
 	for _, dir := range workspaceDirs {
 		if _, err := os.Stat(dir); err == nil {
+			scanRepoPlatforms(dir, 2, emailPlatforms, globalEmail)
+		}
+	}
+
+	// Parse ~/.gitconfig (re-parse to get full identity with platform)
+	if id, err := parseGitConfig(globalConfig, globalConfig, ""); err == nil && id != nil {
+		// Try to get platform from repos using this email
+		if id.Platform == PlatformUnknown {
+			if p, ok := emailPlatforms[id.Email]; ok {
+				id.Platform = p
+			}
+		}
+		if !seen[id.Email] {
+			identities = append(identities, *id)
+			seen[id.Email] = true
+		}
+	}
+
+	// Parse ~/.config/git/config
+	xdgConfig := filepath.Join(home, ".config", "git", "config")
+	if id, err := parseGitConfig(xdgConfig, xdgConfig, ""); err == nil && id != nil {
+		if id.Platform == PlatformUnknown {
+			if p, ok := emailPlatforms[id.Email]; ok {
+				id.Platform = p
+			}
+		}
+		if !seen[id.Email] {
+			identities = append(identities, *id)
+			seen[id.Email] = true
+		}
+	}
+
+	// Scan for .gitconfig includes
+	includeIdentities, _ := scanIncludes(globalConfig)
+	for _, id := range includeIdentities {
+		if id.Platform == PlatformUnknown {
+			if p, ok := emailPlatforms[id.Email]; ok {
+				id.Platform = p
+			}
+		}
+		if !seen[id.Email] {
+			identities = append(identities, id)
+			seen[id.Email] = true
+		}
+	}
+
+	// Scan repos for local identities
+	for _, dir := range workspaceDirs {
+		if _, err := os.Stat(dir); err == nil {
 			found, _ := scanDirectory(dir, 2, seen)
 			identities = append(identities, found...)
 		}
 	}
 
 	return identities, nil
+}
+
+// scanRepoPlatforms scans repos to build email -> platform mapping
+// globalEmail is used when a repo has no local email configured (inherits global)
+func scanRepoPlatforms(dir string, maxDepth int, emailPlatforms map[string]Platform, globalEmail string) {
+	if maxDepth <= 0 {
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		subdir := filepath.Join(dir, entry.Name())
+		gitDir := filepath.Join(subdir, ".git")
+
+		if _, err := os.Stat(gitDir); err == nil {
+			// Found a git repo - detect its platform
+			platform := detectPlatformFromRemotes(gitDir)
+			if platform != PlatformUnknown {
+				// Get the email configured for this repo (local or inherited)
+				email := getRepoEmail(gitDir)
+				if email == "" {
+					// No local email - repo uses global email
+					email = globalEmail
+				}
+				if email != "" {
+					// Only set if not already set (first match wins)
+					if _, exists := emailPlatforms[email]; !exists {
+						emailPlatforms[email] = platform
+					}
+				}
+			}
+		}
+
+		if maxDepth > 1 {
+			scanRepoPlatforms(subdir, maxDepth-1, emailPlatforms, globalEmail)
+		}
+	}
+}
+
+// getRepoEmail gets the user.email for a repo
+func getRepoEmail(gitDir string) string {
+	configPath := filepath.Join(gitDir, "config")
+	file, err := os.Open(configPath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	inUserSection := false
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "[user]") {
+			inUserSection = true
+			continue
+		}
+		if strings.HasPrefix(line, "[") && inUserSection {
+			break
+		}
+		if inUserSection && strings.HasPrefix(line, "email") {
+			return extractValue(line)
+		}
+	}
+	return ""
 }
 
 func parseGitConfig(path, source, repoPath string) (*Identity, error) {
@@ -183,7 +281,6 @@ func scanIncludes(gitconfigPath string) ([]Identity, error) {
 		line := scanner.Text()
 		if matches := includeRegex.FindStringSubmatch(line); len(matches) == 2 {
 			includePath := strings.TrimSpace(matches[1])
-			// Expand ~ to home directory
 			if strings.HasPrefix(includePath, "~") {
 				includePath = filepath.Join(home, includePath[1:])
 			}
@@ -214,19 +311,16 @@ func scanDirectory(dir string, maxDepth int, seen map[string]bool) ([]Identity, 
 		}
 
 		subdir := filepath.Join(dir, entry.Name())
-
-		// Check for .git/config
 		gitDir := filepath.Join(subdir, ".git")
 		gitConfig := filepath.Join(gitDir, "config")
+
 		if id, err := parseGitConfig(gitConfig, gitConfig, gitDir); err == nil && id != nil {
-			key := id.Email
-			if !seen[key] {
+			if !seen[id.Email] {
 				identities = append(identities, *id)
-				seen[key] = true
+				seen[id.Email] = true
 			}
 		}
 
-		// Recurse
 		if maxDepth > 1 {
 			found, _ := scanDirectory(subdir, maxDepth-1, seen)
 			identities = append(identities, found...)
