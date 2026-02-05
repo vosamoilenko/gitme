@@ -22,7 +22,8 @@ const (
 type Identity struct {
 	Name     string   `json:"name"`
 	Email    string   `json:"email"`
-	Source   string   `json:"source"`   // where this identity was found (full path)
+	Source   string   `json:"source"`   // primary source (for backward compat)
+	Sources  []string `json:"sources"`  // ALL places where this identity was found
 	Platform Platform `json:"platform"` // github, gitlab, etc.
 }
 
@@ -148,26 +149,36 @@ func detectPlatformFromHostInfo(host, hostName string) Platform {
 
 // Scan finds all git identities on the machine
 func Scan() ([]Identity, error) {
-	var identities []Identity
-	seen := make(map[string]bool)
-
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse SSH config to detect platform hosts (git.company.com -> gitlab, etc.)
+	// Parse SSH config to detect platform hosts
 	sshHostPlatforms = parseSSHConfig()
 
-	// Get global email first (needed to detect platform for repos that inherit it)
-	globalEmail := ""
-	globalConfig := filepath.Join(home, ".gitconfig")
-	if id, err := parseGitConfig(globalConfig, globalConfig, ""); err == nil && id != nil {
-		globalEmail = id.Email
+	// Map to collect all sources for each email
+	identityMap := make(map[string]*Identity)
+
+	// Helper to add or update identity
+	addIdentity := func(id *Identity) {
+		if id == nil || id.Email == "" {
+			return
+		}
+		if existing, ok := identityMap[id.Email]; ok {
+			// Add this source to existing identity
+			existing.Sources = append(existing.Sources, id.Source)
+			// Update platform if we found a better match
+			if existing.Platform == PlatformUnknown && id.Platform != PlatformUnknown {
+				existing.Platform = id.Platform
+			}
+		} else {
+			// New identity
+			id.Sources = []string{id.Source}
+			identityMap[id.Email] = id
+		}
 	}
 
-	// Scan all repos to build email -> platform mapping
-	emailPlatforms := make(map[string]Platform)
 	workspaceDirs := []string{
 		filepath.Join(home, "Developer"),
 		filepath.Join(home, "Projects"),
@@ -177,63 +188,96 @@ func Scan() ([]Identity, error) {
 		filepath.Join(home, "work"),
 	}
 
+	// First pass: scan all repos to detect platforms
+	emailPlatforms := make(map[string]Platform)
+	globalEmail := ""
+	globalConfig := filepath.Join(home, ".gitconfig")
+	if id, _ := parseGitConfig(globalConfig, globalConfig, ""); id != nil {
+		globalEmail = id.Email
+	}
 	for _, dir := range workspaceDirs {
 		if _, err := os.Stat(dir); err == nil {
-			scanRepoPlatforms(dir, 2, emailPlatforms, globalEmail)
+			scanRepoPlatforms(dir, 3, emailPlatforms, globalEmail)
 		}
 	}
 
-	// Parse ~/.gitconfig (re-parse to get full identity with platform)
-	if id, err := parseGitConfig(globalConfig, globalConfig, ""); err == nil && id != nil {
-		// Try to get platform from repos using this email
+	// Parse ~/.gitconfig
+	if id, _ := parseGitConfig(globalConfig, globalConfig, ""); id != nil {
 		if id.Platform == PlatformUnknown {
 			if p, ok := emailPlatforms[id.Email]; ok {
 				id.Platform = p
 			}
 		}
-		if !seen[id.Email] {
-			identities = append(identities, *id)
-			seen[id.Email] = true
-		}
+		addIdentity(id)
 	}
 
 	// Parse ~/.config/git/config
 	xdgConfig := filepath.Join(home, ".config", "git", "config")
-	if id, err := parseGitConfig(xdgConfig, xdgConfig, ""); err == nil && id != nil {
+	if id, _ := parseGitConfig(xdgConfig, xdgConfig, ""); id != nil {
 		if id.Platform == PlatformUnknown {
 			if p, ok := emailPlatforms[id.Email]; ok {
 				id.Platform = p
 			}
 		}
-		if !seen[id.Email] {
-			identities = append(identities, *id)
-			seen[id.Email] = true
-		}
+		addIdentity(id)
 	}
 
-	// Scan for .gitconfig includes
-	includeIdentities, _ := scanIncludes(globalConfig)
-	for _, id := range includeIdentities {
-		if id.Platform == PlatformUnknown {
-			if p, ok := emailPlatforms[id.Email]; ok {
-				id.Platform = p
-			}
-		}
-		if !seen[id.Email] {
-			identities = append(identities, id)
-			seen[id.Email] = true
-		}
-	}
-
-	// Scan repos for local identities
+	// Scan ALL repos for local identities (increased depth to 4)
 	for _, dir := range workspaceDirs {
 		if _, err := os.Stat(dir); err == nil {
-			found, _ := scanDirectory(dir, 2, seen)
-			identities = append(identities, found...)
+			scanAllRepos(dir, 4, identityMap, emailPlatforms)
 		}
+	}
+
+	// Convert map to slice
+	var identities []Identity
+	for _, id := range identityMap {
+		identities = append(identities, *id)
 	}
 
 	return identities, nil
+}
+
+// scanAllRepos scans all repos and collects identities with all their sources
+func scanAllRepos(dir string, maxDepth int, identityMap map[string]*Identity, emailPlatforms map[string]Platform) {
+	if maxDepth <= 0 {
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		subdir := filepath.Join(dir, entry.Name())
+		gitDir := filepath.Join(subdir, ".git")
+		gitConfig := filepath.Join(gitDir, "config")
+
+		if id, _ := parseGitConfig(gitConfig, gitConfig, gitDir); id != nil {
+			if id.Platform == PlatformUnknown {
+				if p, ok := emailPlatforms[id.Email]; ok {
+					id.Platform = p
+				}
+			}
+			// Add to map (will merge sources if email already exists)
+			if existing, ok := identityMap[id.Email]; ok {
+				existing.Sources = append(existing.Sources, id.Source)
+			} else {
+				id.Sources = []string{id.Source}
+				identityMap[id.Email] = id
+			}
+		}
+
+		// Recurse deeper
+		if maxDepth > 1 {
+			scanAllRepos(subdir, maxDepth-1, identityMap, emailPlatforms)
+		}
+	}
 }
 
 // scanRepoPlatforms scans repos to build email -> platform mapping
