@@ -60,6 +60,14 @@ func (c *Config) Save() error {
 	return os.WriteFile(configPath, data, 0644)
 }
 
+// Delete removes the config file
+func Delete() error {
+	if err := os.Remove(configPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // SetIdentityForFolder associates an identity with a folder
 func (c *Config) SetIdentityForFolder(folder string, id identity.Identity) {
 	c.FolderIdentities[folder] = id

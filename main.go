@@ -15,10 +15,15 @@ import (
 )
 
 var (
-	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("170"))
-	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	headerStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("170"))
+	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 )
+
+type mixedRepo struct {
+	path       string
+	identities []string
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -35,8 +40,16 @@ func main() {
 		cmdRemove()
 	case "scan", "refresh":
 		cmdScan()
+	case "reset":
+		cmdReset()
 	case "repos":
 		cmdRepos()
+	case "mixed":
+		cmdMixed()
+	case "fix:scan":
+		cmdFixScan()
+	case "fix:rewrite":
+		cmdFixRewrite()
 	case "current", "whoami":
 		cmdCurrent()
 	case "set":
@@ -57,10 +70,14 @@ func cmdHelp() {
 	fmt.Println("  gitme              Interactive TUI (enter=select, d=delete, r=rescan)")
 	fmt.Println("  gitme list         List all known identities")
 	fmt.Println("  gitme repos        Show all repos and which identity they use")
+	fmt.Println("  gitme mixed        Show repos with multiple identities in history")
+	fmt.Println("  gitme fix:scan     Show commits by your identities in current repo")
+	fmt.Println("  gitme fix:rewrite <old> <new>  Rewrite commits from old to new email")
 	fmt.Println("  gitme add          Add a new identity interactively")
 	fmt.Println("  gitme add <n> <e>  Add identity with name and email")
 	fmt.Println("  gitme remove <#|e> Remove identity by number or email")
 	fmt.Println("  gitme scan         Rescan machine for git identities")
+	fmt.Println("  gitme reset        Delete config and rescan from scratch")
 	fmt.Println("  gitme current      Show current identity for this folder")
 	fmt.Println("  gitme set <email>  Set identity by email (no TUI)")
 	fmt.Println("  gitme help         Show this help")
@@ -315,6 +332,49 @@ func cmdScan() {
 	}
 }
 
+func cmdReset() {
+	fmt.Println("Deleting config and rescanning...")
+
+	if err := config.Delete(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error deleting config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Now rescan
+	scanned, err := identity.Scan()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error scanning: %v\n", err)
+		os.Exit(1)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	cfg.Identities = scanned
+	if err := cfg.Save(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println(successStyle.Render(fmt.Sprintf("Found %d identities", len(cfg.Identities))))
+	fmt.Println()
+	for i, id := range cfg.Identities {
+		platformIcon := ""
+		switch id.Platform {
+		case identity.PlatformGitHub:
+			platformIcon = "[GitHub] "
+		case identity.PlatformGitLab:
+			platformIcon = "[GitLab] "
+		case identity.PlatformBitbucket:
+			platformIcon = "[Bitbucket] "
+		}
+		fmt.Printf("  %d. %s%s <%s>\n", i+1, platformIcon, id.Name, id.Email)
+	}
+}
+
 func cmdRepos() {
 	home, _ := os.UserHomeDir()
 
@@ -351,8 +411,12 @@ func cmdRepos() {
 		}
 	}
 
-	fmt.Println(headerStyle.Render("All repositories:"))
-	fmt.Printf("\nGlobal identity: %s <%s>\n\n", globalName, globalEmail)
+	globalIdentity := fmt.Sprintf("%s <%s>", globalName, globalEmail)
+
+	// Map of identity -> list of repo names
+	reposByIdentity := make(map[string][]string)
+	// Track order of identities (global first)
+	identityOrder := []string{globalIdentity}
 
 	workspaceDirs := []string{
 		filepath.Join(home, "Developer"),
@@ -365,12 +429,27 @@ func cmdRepos() {
 
 	for _, dir := range workspaceDirs {
 		if _, err := os.Stat(dir); err == nil {
-			scanAndShowRepos(dir, 4, globalEmail)
+			collectRepos(dir, 4, globalIdentity, reposByIdentity, &identityOrder)
 		}
+	}
+
+	fmt.Println(headerStyle.Render("All repositories:"))
+	fmt.Println()
+
+	for _, ident := range identityOrder {
+		repos := reposByIdentity[ident]
+		if len(repos) == 0 {
+			continue
+		}
+		fmt.Printf("%s\n", ident)
+		for _, repo := range repos {
+			fmt.Printf("  %s\n", dimStyle.Render(repo))
+		}
+		fmt.Println()
 	}
 }
 
-func scanAndShowRepos(dir string, maxDepth int, globalEmail string) {
+func collectRepos(dir string, maxDepth int, globalIdentity string, reposByIdentity map[string][]string, identityOrder *[]string) {
 	if maxDepth <= 0 {
 		return
 	}
@@ -420,20 +499,352 @@ func scanAndShowRepos(dir string, maxDepth int, globalEmail string) {
 			}
 
 			repoName := filepath.Base(subdir)
+			identity := globalIdentity
 			if localEmail != "" {
-				// Has local config
-				fmt.Printf("  %s\n", repoName)
-				fmt.Printf("     %s <%s> %s\n", localName, localEmail, dimStyle.Render("(local)"))
-			} else {
-				// Uses global
-				fmt.Printf("  %s %s\n", dimStyle.Render(repoName), dimStyle.Render("(global)"))
+				identity = fmt.Sprintf("%s <%s>", localName, localEmail)
+				// Add to order if new
+				found := false
+				for _, id := range *identityOrder {
+					if id == identity {
+						found = true
+						break
+					}
+				}
+				if !found {
+					*identityOrder = append(*identityOrder, identity)
+				}
+			}
+			reposByIdentity[identity] = append(reposByIdentity[identity], repoName)
+		}
+
+		if maxDepth > 1 {
+			collectRepos(subdir, maxDepth-1, globalIdentity, reposByIdentity, identityOrder)
+		}
+	}
+}
+
+func cmdMixed() {
+	home, _ := os.UserHomeDir()
+
+	// Load known identities
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Build set of known emails (lowercase for comparison)
+	knownEmails := make(map[string]string) // lowercase email -> display identity
+	for _, id := range cfg.Identities {
+		key := strings.ToLower(id.Email)
+		knownEmails[key] = fmt.Sprintf("%s <%s>", id.Name, id.Email)
+	}
+
+	if len(knownEmails) < 2 {
+		fmt.Println("You need at least 2 identities configured to check for mixed repos.")
+		return
+	}
+
+	workspaceDirs := []string{
+		filepath.Join(home, "Developer"),
+		filepath.Join(home, "Projects"),
+		filepath.Join(home, "Code"),
+		filepath.Join(home, "workspace"),
+		filepath.Join(home, "src"),
+		filepath.Join(home, "work"),
+	}
+
+	var mixed []mixedRepo
+
+	for _, dir := range workspaceDirs {
+		if _, err := os.Stat(dir); err == nil {
+			findMixedRepos(dir, 4, knownEmails, &mixed)
+		}
+	}
+
+	if len(mixed) == 0 {
+		fmt.Println("No repos with mixed identities found.")
+		return
+	}
+
+	fmt.Println(headerStyle.Render("Repos with multiple identities:"))
+	fmt.Println()
+
+	for _, repo := range mixed {
+		fmt.Printf("%s\n", repo.path)
+		for _, id := range repo.identities {
+			fmt.Printf("  %s\n", dimStyle.Render(id))
+		}
+		fmt.Println()
+	}
+}
+
+func findMixedRepos(dir string, maxDepth int, knownEmails map[string]string, mixed *[]mixedRepo) {
+	if maxDepth <= 0 {
+		return
+	}
+
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		subdir := filepath.Join(dir, entry.Name())
+		gitDir := filepath.Join(subdir, ".git")
+
+		if _, err := os.Stat(gitDir); err == nil {
+			// Found a repo - get unique author emails from git log
+			cmd := exec.Command("git", "-C", subdir, "log", "--format=%ae")
+			output, err := cmd.Output()
+			if err != nil {
+				continue
+			}
+
+			// Find which of YOUR identities are used in this repo
+			foundIdentities := make(map[string]bool)
+			for _, line := range strings.Split(string(output), "\n") {
+				email := strings.ToLower(strings.TrimSpace(line))
+				if displayIdentity, ok := knownEmails[email]; ok {
+					foundIdentities[displayIdentity] = true
+				}
+			}
+
+			// Only show if 2+ of your identities are used
+			if len(foundIdentities) > 1 {
+				var identities []string
+				for id := range foundIdentities {
+					identities = append(identities, id)
+				}
+				*mixed = append(*mixed, mixedRepo{
+					path:       subdir,
+					identities: identities,
+				})
 			}
 		}
 
 		if maxDepth > 1 {
-			scanAndShowRepos(subdir, maxDepth-1, globalEmail)
+			findMixedRepos(subdir, maxDepth-1, knownEmails, mixed)
 		}
 	}
+}
+
+func cmdFixScan() {
+	cwd, _ := os.Getwd()
+
+	// Check if we're in a git repo
+	gitDir := filepath.Join(cwd, ".git")
+	if _, err := os.Stat(gitDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: not a git repository\n")
+		os.Exit(1)
+	}
+	// Load known identities
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Build set of known emails
+	knownEmails := make(map[string]bool)
+	for _, id := range cfg.Identities {
+		knownEmails[strings.ToLower(id.Email)] = true
+	}
+
+	// Get all commits with author info
+	cmd := exec.Command("git", "log", "--format=%H|%an|%ae")
+	cmd.Dir = cwd
+	output, err := cmd.Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error running git log: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Count commits per identity (only your identities)
+	type commitInfo struct {
+		name  string
+		email string
+		count int
+	}
+	identityCounts := make(map[string]*commitInfo)
+
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		name := parts[1]
+		email := parts[2]
+		emailLower := strings.ToLower(email)
+
+		// Only count your identities
+		if !knownEmails[emailLower] {
+			continue
+		}
+
+		key := emailLower
+		if _, ok := identityCounts[key]; !ok {
+			identityCounts[key] = &commitInfo{name: name, email: email, count: 0}
+		}
+		identityCounts[key].count++
+	}
+
+	if len(identityCounts) == 0 {
+		fmt.Println("No commits found from your known identities in this repo.")
+		return
+	}
+
+	// Get current repo's configured identity
+	var configuredEmail string
+	cmdEmail := exec.Command("git", "config", "user.email")
+	cmdEmail.Dir = cwd
+	if out, err := cmdEmail.Output(); err == nil {
+		configuredEmail = strings.ToLower(strings.TrimSpace(string(out)))
+	}
+
+	fmt.Println(headerStyle.Render("Commits by your identities in this repo:"))
+	fmt.Println()
+
+	for _, info := range identityCounts {
+		marker := ""
+		emailLower := strings.ToLower(info.email)
+		if emailLower == configuredEmail {
+			marker = " " + successStyle.Render("(current)")
+		}
+		fmt.Printf("  %s <%s>%s\n", info.name, info.email, marker)
+		fmt.Printf("    %s\n", dimStyle.Render(fmt.Sprintf("%d commits", info.count)))
+	}
+
+	if len(identityCounts) > 1 {
+		fmt.Println()
+		fmt.Println(dimStyle.Render("To rewrite history, use:"))
+		fmt.Println(dimStyle.Render("  gitme fix:rewrite <old-email> <new-email>"))
+	}
+}
+
+func cmdFixRewrite() {
+	if len(os.Args) < 4 {
+		fmt.Fprintf(os.Stderr, "Usage: gitme fix:rewrite <old-email> <new-email>\n")
+		os.Exit(1)
+	}
+
+	cwd, _ := os.Getwd()
+
+	// Check if we're in a git repo
+	gitDir := filepath.Join(cwd, ".git")
+	if _, err := os.Stat(gitDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: not a git repository\n")
+		os.Exit(1)
+	}
+
+	oldEmail := os.Args[2]
+	newEmail := os.Args[3]
+
+	// Load config to find the new identity's name
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Find the new identity
+	var newName string
+	for _, id := range cfg.Identities {
+		if strings.EqualFold(id.Email, newEmail) {
+			newName = id.Name
+			break
+		}
+	}
+	if newName == "" {
+		fmt.Fprintf(os.Stderr, "Error: %s is not a known identity\n", newEmail)
+		fmt.Fprintf(os.Stderr, "Add it first with: gitme add \"Name\" \"%s\"\n", newEmail)
+		os.Exit(1)
+	}
+
+	// Count commits that will be affected
+	cmd := exec.Command("git", "log", "--format=%ae")
+	cmd.Dir = cwd
+	output, err := cmd.Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error running git log: %v\n", err)
+		os.Exit(1)
+	}
+
+	count := 0
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.EqualFold(strings.TrimSpace(line), oldEmail) {
+			count++
+		}
+	}
+
+	if count == 0 {
+		fmt.Printf("No commits found from %s\n", oldEmail)
+		return
+	}
+
+	// Show what will happen and ask for confirmation
+	fmt.Println(headerStyle.Render("Rewrite plan:"))
+	fmt.Println()
+	fmt.Printf("  From: %s\n", oldEmail)
+	fmt.Printf("  To:   %s <%s>\n", newName, newEmail)
+	fmt.Printf("  Commits to rewrite: %d\n", count)
+	fmt.Println()
+	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render("WARNING: This rewrites git history!"))
+	fmt.Println(dimStyle.Render("You will need to force push after this."))
+	fmt.Println()
+	fmt.Print("Continue? [y/N] ")
+
+	var response string
+	fmt.Scanln(&response)
+	if strings.ToLower(response) != "y" {
+		fmt.Println("Aborted.")
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("Rewriting commits...")
+
+	err = rewriteAuthor(cwd, oldEmail, newName, newEmail)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error rewriting history: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println(successStyle.Render("Done!"))
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Println(dimStyle.Render("  git push --force-with-lease"))
+}
+
+// rewriteAuthor rewrites commits from oldEmail to newName/newEmail using git filter-branch
+func rewriteAuthor(repoPath, oldEmail, newName, newEmail string) error {
+	script := `
+if [ "$GIT_COMMITTER_EMAIL" = "` + oldEmail + `" ]; then
+    export GIT_COMMITTER_NAME="` + newName + `"
+    export GIT_COMMITTER_EMAIL="` + newEmail + `"
+fi
+if [ "$GIT_AUTHOR_EMAIL" = "` + oldEmail + `" ]; then
+    export GIT_AUTHOR_NAME="` + newName + `"
+    export GIT_AUTHOR_EMAIL="` + newEmail + `"
+fi
+`
+	cmd := exec.Command("git", "filter-branch", "-f", "--env-filter", script, "--", "--all")
+	cmd.Dir = repoPath
+	cmd.Env = append(os.Environ(), "FILTER_BRANCH_SQUELCH_WARNING=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check if it's just "nothing to rewrite" which is not an error
+		if strings.Contains(string(output), "nothing to rewrite") ||
+			strings.Contains(string(output), "Found nothing to rewrite") {
+			return nil
+		}
+		return fmt.Errorf("%v: %s", err, output)
+	}
+	return nil
 }
 
 func cmdCurrent() {
