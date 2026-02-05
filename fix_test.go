@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/vosamoilenko/gitme/internal/cmd"
 )
 
 // setupTestRepo creates a temporary git repo with commits from different identities
@@ -229,4 +231,7 @@ func TestRewriteAuthorPreservesCommitCount(t *testing.T) {
 	}
 }
 
-// rewriteAuthor is now in main.go
+// rewriteAuthor wraps cmd.RewriteAuthor for testing
+func rewriteAuthor(repoPath, oldEmail, newName, newEmail string) error {
+	return cmd.RewriteAuthor(repoPath, oldEmail, newName, newEmail)
+}
