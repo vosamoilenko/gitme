@@ -87,9 +87,20 @@ func cmdList() {
 	fmt.Println(headerStyle.Render("Identities:"))
 	fmt.Println()
 	for i, id := range cfg.Identities {
-		fmt.Printf("  %d. %s <%s>\n", i+1, id.Name, id.Email)
+		// Platform icon
+		platformIcon := ""
+		switch id.Platform {
+		case identity.PlatformGitHub:
+			platformIcon = "[GitHub] "
+		case identity.PlatformGitLab:
+			platformIcon = "[GitLab] "
+		case identity.PlatformBitbucket:
+			platformIcon = "[Bitbucket] "
+		}
+
+		fmt.Printf("  %d. %s%s <%s>\n", i+1, platformIcon, id.Name, id.Email)
 		if id.Source != "" {
-			fmt.Printf("     %s\n", dimStyle.Render("source: "+id.Source))
+			fmt.Printf("     %s\n", dimStyle.Render(id.Source))
 		}
 	}
 
@@ -239,8 +250,21 @@ func cmdScan() {
 	}
 
 	fmt.Println(successStyle.Render(fmt.Sprintf("Found %d identities", len(cfg.Identities))))
+	fmt.Println()
 	for _, id := range cfg.Identities {
-		fmt.Printf("  • %s <%s>\n", id.Name, id.Email)
+		platformIcon := ""
+		switch id.Platform {
+		case identity.PlatformGitHub:
+			platformIcon = "[GitHub] "
+		case identity.PlatformGitLab:
+			platformIcon = "[GitLab] "
+		case identity.PlatformBitbucket:
+			platformIcon = "[Bitbucket] "
+		}
+		fmt.Printf("  • %s%s <%s>\n", platformIcon, id.Name, id.Email)
+		if id.Source != "" {
+			fmt.Printf("    %s\n", dimStyle.Render(id.Source))
+		}
 	}
 }
 
