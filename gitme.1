@@ -1,0 +1,95 @@
+.TH GITME 1 "February 2026" "gitme 1.0.0" "User Commands"
+.SH NAME
+gitme \- Git identity switcher
+.SH SYNOPSIS
+.B gitme
+[\fICOMMAND\fR] [\fIARGS\fR]
+.SH DESCRIPTION
+.B gitme
+is a terminal application for managing and switching between multiple git identities.
+It discovers git identities from your system and lets you quickly switch between them
+on a per-folder basis without polluting your repositories with extra files.
+.PP
+Identities are stored in \fB~/.config/gitme/config.json\fR and applied via
+\fBgit config --local\fR.
+.SH COMMANDS
+.TP
+.B gitme
+Launch interactive TUI to select an identity.
+.TP
+.B gitme list\fR, \fBgitme ls
+List all known identities with their sources.
+.TP
+.B gitme add \fR[\fINAME\fR] [\fIEMAIL\fR]
+Add a new identity. If name and email are not provided, prompts interactively.
+.TP
+.B gitme remove \fIEMAIL\fR, \fBgitme rm \fIEMAIL
+Remove an identity by email (supports partial match).
+.TP
+.B gitme scan\fR, \fBgitme refresh
+Rescan the machine for git identities. Keeps manually added identities.
+.TP
+.B gitme current\fR, \fBgitme whoami
+Show the current identity for this folder.
+.TP
+.B gitme set \fIEMAIL
+Set identity by email without TUI (supports partial match).
+.TP
+.B gitme help\fR, \fBgitme --help\fR, \fBgitme -h
+Show help information.
+.SH TUI KEYBINDINGS
+.TP
+.B Up/Down
+Navigate the identity list.
+.TP
+.B Enter
+Select the highlighted identity.
+.TP
+.B d\fR, \fBx
+Delete the highlighted identity (with confirmation).
+.TP
+.B r
+Rescan for identities.
+.TP
+.B /
+Filter/search identities.
+.TP
+.B q\fR, \fBEsc\fR, \fBCtrl+C
+Quit without making changes.
+.SH FILES
+.TP
+.I ~/.config/gitme/config.json
+Stores known identities and folder-to-identity mappings.
+.SH IDENTITY DISCOVERY
+.B gitme
+automatically discovers identities from:
+.IP \[bu] 2
+~/.gitconfig (global git config)
+.IP \[bu]
+~/.config/git/config (XDG git config)
+.IP \[bu]
+Included config files (via [include] directives)
+.IP \[bu]
+Local .git/config files in common directories (~/Developer, ~/Projects, etc.)
+.SH EXAMPLES
+.TP
+List all identities:
+.B gitme ls
+.TP
+Add a work identity:
+.B gitme add "John Doe" "john@work.com"
+.TP
+Quick switch using partial email:
+.B gitme set work
+.TP
+Check current identity:
+.B gitme whoami
+.TP
+Rescan after adding new git repos:
+.B gitme scan
+.SH AUTHOR
+Volodymyr Samoilenko <samoilnkovolodymyr@gmail.com>
+.SH SEE ALSO
+.BR git-config (1)
+.SH BUGS
+Report bugs at: https://github.com/vosamoilenko/gitme/issues
