@@ -26,6 +26,10 @@ type Identity struct {
 	Platform Platform `json:"platform"` // github, gitlab, etc.
 }
 
+// sshHostPlatforms maps SSH host aliases to their platform
+// This is populated by parsing ~/.ssh/config
+var sshHostPlatforms map[string]Platform
+
 // String returns a display string for the identity
 func (i Identity) String() string {
 	return i.Name + " <" + i.Email + ">"
@@ -48,6 +52,100 @@ func DetectPlatform(email string) Platform {
 	return PlatformUnknown
 }
 
+// getEmailDomain extracts the domain from an email (e.g., "sclable.com" from "user@sclable.com")
+func getEmailDomain(email string) string {
+	parts := strings.Split(email, "@")
+	if len(parts) == 2 {
+		// Return the main domain (e.g., "sclable" from "sclable.com")
+		domain := parts[1]
+		domainParts := strings.Split(domain, ".")
+		if len(domainParts) >= 2 {
+			return domainParts[0] // "sclable" from "sclable.com"
+		}
+		return domain
+	}
+	return ""
+}
+
+// parseSSHConfig parses ~/.ssh/config to find platform-related hosts
+func parseSSHConfig() map[string]Platform {
+	hosts := make(map[string]Platform)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return hosts
+	}
+
+	configPath := filepath.Join(home, ".ssh", "config")
+	file, err := os.Open(configPath)
+	if err != nil {
+		return hosts
+	}
+	defer file.Close()
+
+	var currentHost string
+	var currentHostName string
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		lineLower := strings.ToLower(line)
+
+		// Skip comments
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Parse Host directive
+		if strings.HasPrefix(lineLower, "host ") {
+			// Save previous host if it has platform info
+			if currentHost != "" {
+				if p := detectPlatformFromHostInfo(currentHost, currentHostName); p != PlatformUnknown {
+					hosts[currentHost] = p
+				}
+			}
+			currentHost = strings.TrimSpace(line[5:])
+			currentHostName = ""
+			continue
+		}
+
+		// Parse HostName directive
+		if strings.HasPrefix(lineLower, "hostname ") {
+			currentHostName = strings.TrimSpace(line[9:])
+		}
+	}
+
+	// Don't forget the last host
+	if currentHost != "" {
+		if p := detectPlatformFromHostInfo(currentHost, currentHostName); p != PlatformUnknown {
+			hosts[currentHost] = p
+		}
+	}
+
+	return hosts
+}
+
+// detectPlatformFromHostInfo detects platform from host alias or hostname
+func detectPlatformFromHostInfo(host, hostName string) Platform {
+	combined := strings.ToLower(host + " " + hostName)
+
+	if strings.Contains(combined, "github") {
+		return PlatformGitHub
+	}
+	if strings.Contains(combined, "gitlab") || strings.Contains(combined, "git.") {
+		// git.sclable.com, git.company.com etc are usually GitLab
+		if strings.Contains(combined, "github") {
+			return PlatformGitHub
+		}
+		return PlatformGitLab
+	}
+	if strings.Contains(combined, "bitbucket") {
+		return PlatformBitbucket
+	}
+
+	return PlatformUnknown
+}
+
 // Scan finds all git identities on the machine
 func Scan() ([]Identity, error) {
 	var identities []Identity
@@ -57,6 +155,9 @@ func Scan() ([]Identity, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Parse SSH config to detect platform hosts (git.company.com -> gitlab, etc.)
+	sshHostPlatforms = parseSSHConfig()
 
 	// Get global email first (needed to detect platform for repos that inherit it)
 	globalEmail := ""
@@ -156,8 +257,8 @@ func scanRepoPlatforms(dir string, maxDepth int, emailPlatforms map[string]Platf
 		gitDir := filepath.Join(subdir, ".git")
 
 		if _, err := os.Stat(gitDir); err == nil {
-			// Found a git repo - detect its platform
-			platform := detectPlatformFromRemotes(gitDir)
+			// Found a git repo - detect its platform and remote host
+			platform, remoteHost := detectPlatformFromRemotesWithHost(gitDir)
 			if platform != PlatformUnknown {
 				// Get the email configured for this repo (local or inherited)
 				email := getRepoEmail(gitDir)
@@ -166,9 +267,20 @@ func scanRepoPlatforms(dir string, maxDepth int, emailPlatforms map[string]Platf
 					email = globalEmail
 				}
 				if email != "" {
-					// Only set if not already set (first match wins)
-					if _, exists := emailPlatforms[email]; !exists {
+					existingPlatform, exists := emailPlatforms[email]
+					// Prefer platform that matches email domain
+					// e.g., sclable.com email + git.sclable.com remote = strong match
+					emailDomain := getEmailDomain(email)
+					if !exists {
 						emailPlatforms[email] = platform
+					} else if remoteHost != "" && strings.Contains(remoteHost, emailDomain) {
+						// This remote matches the email domain - prefer it
+						emailPlatforms[email] = platform
+					} else if existingPlatform == PlatformGitHub && platform == PlatformGitLab {
+						// Prefer GitLab for non-gmail/non-github emails (likely corporate)
+						if !strings.Contains(email, "gmail") && !strings.Contains(email, "github") {
+							emailPlatforms[email] = platform
+						}
 					}
 				}
 			}
@@ -332,10 +444,16 @@ func scanDirectory(dir string, maxDepth int, seen map[string]bool) ([]Identity, 
 
 // detectPlatformFromRemotes checks git remotes to detect the platform
 func detectPlatformFromRemotes(gitDir string) Platform {
+	platform, _ := detectPlatformFromRemotesWithHost(gitDir)
+	return platform
+}
+
+// detectPlatformFromRemotesWithHost checks git remotes and returns platform + remote host
+func detectPlatformFromRemotesWithHost(gitDir string) (Platform, string) {
 	configPath := filepath.Join(gitDir, "config")
 	file, err := os.Open(configPath)
 	if err != nil {
-		return PlatformUnknown
+		return PlatformUnknown, ""
 	}
 	defer file.Close()
 
@@ -343,17 +461,68 @@ func detectPlatformFromRemotes(gitDir string) Platform {
 	for scanner.Scan() {
 		line := strings.ToLower(scanner.Text())
 		if strings.Contains(line, "url") {
-			if strings.Contains(line, "github.com") {
-				return PlatformGitHub
+			// Extract the URL part after "="
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) < 2 {
+				continue
 			}
-			if strings.Contains(line, "gitlab.com") || strings.Contains(line, "gitlab") {
-				return PlatformGitLab
+			url := strings.TrimSpace(parts[1])
+
+			// Extract host from URL (git@host:path or https://host/path)
+			host := extractHostFromURL(url)
+
+			// Check standard platforms first
+			if strings.Contains(url, "github.com") {
+				return PlatformGitHub, host
 			}
-			if strings.Contains(line, "bitbucket") {
-				return PlatformBitbucket
+			if strings.Contains(url, "gitlab.com") {
+				return PlatformGitLab, host
+			}
+			if strings.Contains(url, "bitbucket") {
+				return PlatformBitbucket, host
+			}
+
+			// Check SSH host aliases (e.g., git@scl-gitlab:org/repo.git)
+			if sshHostPlatforms != nil {
+				for sshHost, platform := range sshHostPlatforms {
+					hostLower := strings.ToLower(sshHost)
+					if strings.Contains(url, hostLower+":") || strings.Contains(url, hostLower+"/") || strings.Contains(url, "@"+hostLower) {
+						return platform, host
+					}
+				}
+			}
+
+			// Check for generic git.* domains (usually GitLab self-hosted)
+			if strings.Contains(url, "git.") && !strings.Contains(url, "github") {
+				return PlatformGitLab, host
 			}
 		}
 	}
 
-	return PlatformUnknown
+	return PlatformUnknown, ""
+}
+
+// extractHostFromURL extracts the host from a git URL
+func extractHostFromURL(url string) string {
+	// Handle git@host:path format
+	if strings.HasPrefix(url, "git@") {
+		url = url[4:] // Remove "git@"
+		if idx := strings.Index(url, ":"); idx != -1 {
+			return url[:idx]
+		}
+	}
+	// Handle https://host/path format
+	if strings.HasPrefix(url, "https://") {
+		url = url[8:]
+		if idx := strings.Index(url, "/"); idx != -1 {
+			return url[:idx]
+		}
+	}
+	if strings.HasPrefix(url, "http://") {
+		url = url[7:]
+		if idx := strings.Index(url, "/"); idx != -1 {
+			return url[:idx]
+		}
+	}
+	return url
 }
