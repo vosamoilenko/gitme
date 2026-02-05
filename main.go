@@ -55,7 +55,7 @@ func cmdHelp() {
 	fmt.Println("  gitme list         List all known identities")
 	fmt.Println("  gitme add          Add a new identity interactively")
 	fmt.Println("  gitme add <n> <e>  Add identity with name and email")
-	fmt.Println("  gitme remove <e>   Remove an identity by email")
+	fmt.Println("  gitme remove <#|e> Remove identity by number or email")
 	fmt.Println("  gitme scan         Rescan machine for git identities")
 	fmt.Println("  gitme current      Show current identity for this folder")
 	fmt.Println("  gitme set <email>  Set identity by email (no TUI)")
@@ -168,11 +168,13 @@ func cmdAdd() {
 
 func cmdRemove() {
 	if len(os.Args) < 3 {
-		fmt.Fprintf(os.Stderr, "Usage: gitme remove <email>\n")
+		fmt.Fprintf(os.Stderr, "Usage: gitme remove <number|email>\n")
+		fmt.Fprintf(os.Stderr, "  gitme rm 3        Remove identity #3\n")
+		fmt.Fprintf(os.Stderr, "  gitme rm gmail    Remove by partial email match\n")
 		os.Exit(1)
 	}
 
-	email := os.Args[2]
+	arg := os.Args[2]
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -180,20 +182,41 @@ func cmdRemove() {
 		os.Exit(1)
 	}
 
+	// Check if arg is a number (index)
+	var removeIndex int = -1
+	if idx, err := fmt.Sscanf(arg, "%d", &removeIndex); err == nil && idx == 1 {
+		removeIndex-- // Convert to 0-based index
+		if removeIndex < 0 || removeIndex >= len(cfg.Identities) {
+			fmt.Fprintf(os.Stderr, "Invalid index: %s (valid: 1-%d)\n", arg, len(cfg.Identities))
+			os.Exit(1)
+		}
+	}
+
 	// Find and remove identity
 	found := false
 	newIdentities := []identity.Identity{}
-	for _, id := range cfg.Identities {
-		if id.Email == email || strings.Contains(id.Email, email) {
+	for i, id := range cfg.Identities {
+		shouldRemove := false
+		if removeIndex >= 0 {
+			// Remove by index
+			shouldRemove = (i == removeIndex)
+		} else {
+			// Remove by email match
+			shouldRemove = (id.Email == arg || strings.Contains(id.Email, arg))
+		}
+
+		if shouldRemove {
 			found = true
 			fmt.Println(successStyle.Render("Removed:"), id.Name, "<"+id.Email+">")
+			fmt.Println(dimStyle.Render("  was at: " + id.Source))
 		} else {
 			newIdentities = append(newIdentities, id)
 		}
 	}
 
 	if !found {
-		fmt.Fprintf(os.Stderr, "Identity not found: %s\n", email)
+		fmt.Fprintf(os.Stderr, "Identity not found: %s\n", arg)
+		fmt.Fprintf(os.Stderr, "Run 'gitme list' to see all identities\n")
 		os.Exit(1)
 	}
 
