@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -34,6 +35,8 @@ func main() {
 		cmdRemove()
 	case "scan", "refresh":
 		cmdScan()
+	case "repos":
+		cmdRepos()
 	case "current", "whoami":
 		cmdCurrent()
 	case "set":
@@ -53,6 +56,7 @@ func cmdHelp() {
 	fmt.Println("Usage:")
 	fmt.Println("  gitme              Interactive TUI (enter=select, d=delete, r=rescan)")
 	fmt.Println("  gitme list         List all known identities")
+	fmt.Println("  gitme repos        Show all repos and which identity they use")
 	fmt.Println("  gitme add          Add a new identity interactively")
 	fmt.Println("  gitme add <n> <e>  Add identity with name and email")
 	fmt.Println("  gitme remove <#|e> Remove identity by number or email")
@@ -99,7 +103,12 @@ func cmdList() {
 		}
 
 		fmt.Printf("  %d. %s%s <%s>\n", i+1, platformIcon, id.Name, id.Email)
-		if id.Source != "" {
+		// Show ALL sources where this identity was found
+		if len(id.Sources) > 0 {
+			for _, src := range id.Sources {
+				fmt.Printf("     %s\n", dimStyle.Render(src))
+			}
+		} else if id.Source != "" {
 			fmt.Printf("     %s\n", dimStyle.Render(id.Source))
 		}
 	}
@@ -285,8 +294,134 @@ func cmdScan() {
 			platformIcon = "[Bitbucket] "
 		}
 		fmt.Printf("  %d. %s%s <%s>\n", i+1, platformIcon, id.Name, id.Email)
-		if id.Source != "" {
+		// Show ALL sources where this identity was found
+		if len(id.Sources) > 0 {
+			for _, src := range id.Sources {
+				fmt.Printf("     %s\n", dimStyle.Render(src))
+			}
+		} else if id.Source != "" {
 			fmt.Printf("     %s\n", dimStyle.Render(id.Source))
+		}
+	}
+}
+
+func cmdRepos() {
+	home, _ := os.UserHomeDir()
+
+	// Get global identity
+	globalEmail := ""
+	globalName := ""
+	globalConfig := filepath.Join(home, ".gitconfig")
+	if data, err := os.ReadFile(globalConfig); err == nil {
+		lines := strings.Split(string(data), "\n")
+		inUser := false
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "[user]" {
+				inUser = true
+				continue
+			}
+			if strings.HasPrefix(line, "[") {
+				inUser = false
+			}
+			if inUser {
+				if strings.HasPrefix(line, "email") {
+					parts := strings.SplitN(line, "=", 2)
+					if len(parts) == 2 {
+						globalEmail = strings.TrimSpace(parts[1])
+					}
+				}
+				if strings.HasPrefix(line, "name") {
+					parts := strings.SplitN(line, "=", 2)
+					if len(parts) == 2 {
+						globalName = strings.TrimSpace(parts[1])
+					}
+				}
+			}
+		}
+	}
+
+	fmt.Println(headerStyle.Render("All repositories:"))
+	fmt.Printf("\nGlobal identity: %s <%s>\n\n", globalName, globalEmail)
+
+	workspaceDirs := []string{
+		filepath.Join(home, "Developer"),
+		filepath.Join(home, "Projects"),
+		filepath.Join(home, "Code"),
+		filepath.Join(home, "workspace"),
+		filepath.Join(home, "src"),
+		filepath.Join(home, "work"),
+	}
+
+	for _, dir := range workspaceDirs {
+		if _, err := os.Stat(dir); err == nil {
+			scanAndShowRepos(dir, 4, globalEmail)
+		}
+	}
+}
+
+func scanAndShowRepos(dir string, maxDepth int, globalEmail string) {
+	if maxDepth <= 0 {
+		return
+	}
+
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		subdir := filepath.Join(dir, entry.Name())
+		gitDir := filepath.Join(subdir, ".git")
+
+		if _, err := os.Stat(gitDir); err == nil {
+			// Found a repo - check if it has local user config
+			configPath := filepath.Join(gitDir, "config")
+			localEmail := ""
+			localName := ""
+
+			if data, err := os.ReadFile(configPath); err == nil {
+				lines := strings.Split(string(data), "\n")
+				inUser := false
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if line == "[user]" {
+						inUser = true
+						continue
+					}
+					if strings.HasPrefix(line, "[") {
+						inUser = false
+					}
+					if inUser {
+						if strings.HasPrefix(line, "email") {
+							parts := strings.SplitN(line, "=", 2)
+							if len(parts) == 2 {
+								localEmail = strings.TrimSpace(parts[1])
+							}
+						}
+						if strings.HasPrefix(line, "name") {
+							parts := strings.SplitN(line, "=", 2)
+							if len(parts) == 2 {
+								localName = strings.TrimSpace(parts[1])
+							}
+						}
+					}
+				}
+			}
+
+			repoName := filepath.Base(subdir)
+			if localEmail != "" {
+				// Has local config
+				fmt.Printf("  %s\n", repoName)
+				fmt.Printf("     %s <%s> %s\n", localName, localEmail, dimStyle.Render("(local)"))
+			} else {
+				// Uses global
+				fmt.Printf("  %s %s\n", dimStyle.Render(repoName), dimStyle.Render("(global)"))
+			}
+		}
+
+		if maxDepth > 1 {
+			scanAndShowRepos(subdir, maxDepth-1, globalEmail)
 		}
 	}
 }
