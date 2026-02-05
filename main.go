@@ -274,7 +274,7 @@ func cmdScan() {
 
 	fmt.Println(successStyle.Render(fmt.Sprintf("Found %d identities", len(cfg.Identities))))
 	fmt.Println()
-	for _, id := range cfg.Identities {
+	for i, id := range cfg.Identities {
 		platformIcon := ""
 		switch id.Platform {
 		case identity.PlatformGitHub:
@@ -284,9 +284,9 @@ func cmdScan() {
 		case identity.PlatformBitbucket:
 			platformIcon = "[Bitbucket] "
 		}
-		fmt.Printf("  • %s%s <%s>\n", platformIcon, id.Name, id.Email)
+		fmt.Printf("  %d. %s%s <%s>\n", i+1, platformIcon, id.Name, id.Email)
 		if id.Source != "" {
-			fmt.Printf("    %s\n", dimStyle.Render(id.Source))
+			fmt.Printf("     %s\n", dimStyle.Render(id.Source))
 		}
 	}
 }
