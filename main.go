@@ -11,6 +11,8 @@ import (
 	"github.com/vosamoilenko/gitme/internal/ui"
 )
 
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		runTUI()
@@ -18,6 +20,9 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "version", "--version", "-v":
+		fmt.Println("gitme " + version)
+		return
 	// Identity management
 	case "list", "ls":
 		cmd.List()
@@ -58,6 +63,12 @@ func main() {
 	case "tree":
 		cmd.Tree()
 
+	// Aliases
+	case "alias":
+		cmd.Alias()
+	case "use":
+		cmd.Use()
+
 	// Statistics
 	case "stats":
 		cmd.Stats()
@@ -97,6 +108,12 @@ func printHelp() {
 	fmt.Println("  gitme rule list             List all rules")
 	fmt.Println("  gitme rule rm <pattern>     Remove a rule")
 	fmt.Println("  gitme config auto_apply <on|off>  Set auto-apply behavior")
+	fmt.Println()
+	fmt.Println(cmd.HeaderStyle.Render("Aliases:"))
+	fmt.Println("  gitme alias add <name> <email>  Add an alias for quick switching")
+	fmt.Println("  gitme alias list                List all aliases")
+	fmt.Println("  gitme alias rm <name>           Remove an alias")
+	fmt.Println("  gitme use <alias>               Switch identity by alias name")
 	fmt.Println()
 	fmt.Println(cmd.HeaderStyle.Render("Statistics:"))
 	fmt.Println("  gitme stats                 Show commit stats by identity in current repo")

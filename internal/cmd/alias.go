@@ -3,9 +3,129 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"regexp"
+	"strings"
 
 	"github.com/vosamoilenko/gitme/internal/config"
+	"github.com/vosamoilenko/gitme/internal/identity"
 )
+
+var sshRemoteRe = regexp.MustCompile(`^git@([^:]+):(.+)$`)
+
+func switchSSHRemotes(cwd, alias string) error {
+	cmd := exec.Command("git", "remote", "-v")
+	cmd.Dir = cwd
+	out, err := cmd.Output()
+	if err != nil {
+		return err
+	}
+
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		remoteName := fields[0]
+		url := fields[1]
+
+		if seen[remoteName] {
+			continue
+		}
+		seen[remoteName] = true
+
+		m := sshRemoteRe.FindStringSubmatch(url)
+		if m == nil {
+			continue
+		}
+
+		host := m[1]
+		path := m[2]
+
+		var platform string
+		switch {
+		case strings.Contains(host, "github"):
+			platform = "github"
+		case strings.Contains(host, "gitlab"):
+			platform = "gitlab"
+		default:
+			continue
+		}
+
+		newHost := alias + "-" + platform
+		if host == newHost {
+			continue
+		}
+
+		newURL := "git@" + newHost + ":" + path
+		setCmd := exec.Command("git", "remote", "set-url", remoteName, newURL)
+		setCmd.Dir = cwd
+		if err := setCmd.Run(); err != nil {
+			return fmt.Errorf("failed to update remote %s: %w", remoteName, err)
+		}
+		fmt.Printf("  Remote %s → %s\n", remoteName, newURL)
+	}
+	return nil
+}
+
+// Use resolves an alias and switches identity + SSH remote
+func Use() {
+	if len(os.Args) < 3 {
+		fmt.Fprintf(os.Stderr, "Usage: gitme use <alias>\n")
+		os.Exit(1)
+	}
+
+	name := os.Args[2]
+
+	aliases, err := config.LoadAliases()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading aliases: %v\n", err)
+		os.Exit(1)
+	}
+
+	email := aliases.ResolveAlias(name)
+	if email == name {
+		fmt.Fprintf(os.Stderr, "Alias not found: %s\n", name)
+		fmt.Fprintf(os.Stderr, "Run 'gitme alias list' to see available aliases\n")
+		os.Exit(1)
+	}
+
+	cwd, _ := os.Getwd()
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	var found *identity.Identity
+	for _, id := range cfg.Identities {
+		if id.Email == email {
+			found = &id
+			break
+		}
+	}
+
+	if found == nil {
+		fmt.Fprintf(os.Stderr, "Identity not found for email: %s\n", email)
+		os.Exit(1)
+	}
+
+	if err := ApplyIdentity(cwd, *found); err != nil {
+		fmt.Fprintf(os.Stderr, "Error applying identity: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := switchSSHRemotes(cwd, name); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not switch SSH remotes: %v\n", err)
+	}
+
+	cfg.SetIdentityForFolder(cwd, *found)
+	cfg.Save()
+
+	fmt.Println(SuccessStyle.Render("Switched to:"), found.Name, "<"+found.Email+">")
+}
 
 // Alias handles the alias subcommand
 func Alias() {

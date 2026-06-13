@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/atotto/clipboard"
 )
@@ -126,19 +127,98 @@ func wtCb(args []string) {
 	fmt.Println(DimStyle.Render("(path copied to clipboard)"))
 }
 
+func getMainWorktreePath() string {
+	out, err := exec.Command("git", "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			return strings.TrimPrefix(line, "worktree ")
+		}
+	}
+	return ""
+}
+
+func getNonMainWorktreePaths() []string {
+	out, err := exec.Command("git", "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	first := true
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			if first {
+				first = false
+				continue
+			}
+			paths = append(paths, strings.TrimPrefix(line, "worktree "))
+		}
+	}
+	return paths
+}
+
 func wtLs() {
 	_ = requireGitRoot()
-	cmd := exec.Command("git", "worktree", "list")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Run()
+	out, err := exec.Command("git", "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to list worktrees")
+		os.Exit(1)
+	}
+
+	first := true
+	var current []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			if len(current) > 0 && !first {
+				fmt.Println(strings.Join(current, " "))
+			}
+			if first {
+				first = false
+				current = nil
+				continue
+			}
+			current = []string{strings.TrimPrefix(line, "worktree ")}
+		} else if strings.HasPrefix(line, "HEAD ") && current != nil {
+			current = append(current, strings.TrimPrefix(line, "HEAD ")[:10])
+		} else if strings.HasPrefix(line, "branch ") && current != nil {
+			branch := strings.TrimPrefix(line, "branch refs/heads/")
+			current = append(current, "["+branch+"]")
+		}
+	}
+	if len(current) > 0 {
+		fmt.Println(strings.Join(current, " "))
+	}
 }
 
 func wtRm(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: gitme tree rm <branch-name|path>")
+		fmt.Fprintln(os.Stderr, "Usage: gitme tree rm <branch-name|path|--all>")
 		os.Exit(1)
 	}
+
+	_ = requireGitRoot()
+
+	if args[0] == "--all" {
+		paths := getNonMainWorktreePaths()
+		if len(paths) == 0 {
+			fmt.Println("No worktrees to remove")
+			return
+		}
+		for _, p := range paths {
+			cmd := exec.Command("git", "worktree", "remove", p)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to remove: %s\n", p)
+				continue
+			}
+			fmt.Println(SuccessStyle.Render("Removed worktree:"), p)
+		}
+		return
+	}
+
 	target := args[0]
 	gitRoot := requireGitRoot()
 
@@ -152,6 +232,11 @@ func wtRm(args []string) {
 	}
 
 	resolved, _ := filepath.Abs(target)
+
+	if mainWt := getMainWorktreePath(); mainWt != "" && resolved == mainWt {
+		fmt.Fprintln(os.Stderr, "Cannot remove the main working tree")
+		os.Exit(1)
+	}
 
 	cmd := exec.Command("git", "worktree", "remove", resolved)
 	cmd.Stdout = os.Stdout
@@ -196,4 +281,5 @@ func treeHelp() {
 	fmt.Println("  gitme tree cb <branch>     Create a worktree branch (copies path to clipboard)")
 	fmt.Println("  gitme tree ls              List all worktrees")
 	fmt.Println("  gitme tree rm <name|path>  Remove a worktree")
+	fmt.Println("  gitme tree rm --all        Remove all worktrees (keeps main repo)")
 }
