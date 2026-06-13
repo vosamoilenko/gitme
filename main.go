@@ -54,6 +54,10 @@ func main() {
 	case "config":
 		cmd.Config()
 
+	// Worktree management
+	case "tree":
+		cmd.Tree()
+
 	// Statistics
 	case "stats":
 		cmd.Stats()
@@ -97,6 +101,12 @@ func printHelp() {
 	fmt.Println(cmd.HeaderStyle.Render("Statistics:"))
 	fmt.Println("  gitme stats                 Show commit stats by identity in current repo")
 	fmt.Println("  gitme stats --all           Show commit stats across all repos")
+	fmt.Println()
+	fmt.Println(cmd.HeaderStyle.Render("Worktrees:"))
+	fmt.Println("  gitme tree path [<path>]    Show or set worktrees path for this project")
+	fmt.Println("  gitme tree cb <branch>      Create a worktree branch (copies path to clipboard)")
+	fmt.Println("  gitme tree ls               List all worktrees")
+	fmt.Println("  gitme tree rm <name|path>   Remove a worktree")
 	fmt.Println()
 	fmt.Println("  gitme help         Show this help")
 	fmt.Println()

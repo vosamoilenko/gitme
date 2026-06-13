@@ -239,3 +239,68 @@ func (s *Settings) Save() error {
 	}
 	return os.WriteFile(settingsPath(), data, 0644)
 }
+
+// ============ Aliases Config ============
+
+// AliasConfig holds name-to-email aliases
+type AliasConfig struct {
+	Aliases map[string]string `json:"aliases"`
+}
+
+func aliasesPath() string {
+	return filepath.Join(configDir, "aliases.json")
+}
+
+// LoadAliases reads the aliases config from disk
+func LoadAliases() (*AliasConfig, error) {
+	cfg := &AliasConfig{Aliases: make(map[string]string)}
+
+	data, err := os.ReadFile(aliasesPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return nil, err
+	}
+
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return nil, err
+	}
+
+	if cfg.Aliases == nil {
+		cfg.Aliases = make(map[string]string)
+	}
+
+	return cfg, nil
+}
+
+// Save writes the aliases config to disk
+func (a *AliasConfig) Save() error {
+	data, err := json.MarshalIndent(a, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(aliasesPath(), data, 0644)
+}
+
+// SetAlias adds or updates an alias
+func (a *AliasConfig) SetAlias(name, email string) {
+	a.Aliases[name] = email
+}
+
+// RemoveAlias removes an alias, returns false if not found
+func (a *AliasConfig) RemoveAlias(name string) bool {
+	if _, ok := a.Aliases[name]; !ok {
+		return false
+	}
+	delete(a.Aliases, name)
+	return true
+}
+
+// ResolveAlias returns the email for an alias, or the input if not found
+func (a *AliasConfig) ResolveAlias(nameOrEmail string) string {
+	if email, ok := a.Aliases[nameOrEmail]; ok {
+		return email
+	}
+	return nameOrEmail
+}
