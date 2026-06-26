@@ -127,6 +127,47 @@ func wtCb(args []string) {
 	fmt.Println(DimStyle.Render("(path copied to clipboard)"))
 }
 
+func wtCo(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: gitme tree co <branch-name>")
+		os.Exit(1)
+	}
+	branchName := args[0]
+
+	gitRoot := requireGitRoot()
+	worktreesDir := getWorktreesPath(gitRoot)
+	os.MkdirAll(worktreesDir, 0755)
+
+	wtPath := filepath.Join(worktreesDir, branchName)
+	if _, err := os.Stat(wtPath); err == nil {
+		fmt.Fprintf(os.Stderr, "Path already exists: %s\n", wtPath)
+		os.Exit(1)
+	}
+
+	fetch := exec.Command("git", "fetch", "origin", branchName)
+	fetch.Stdout = os.Stdout
+	fetch.Stderr = os.Stderr
+	if err := fetch.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to fetch origin/%s\n", branchName)
+		os.Exit(1)
+	}
+
+	cmd := exec.Command("git", "worktree", "add", wtPath, "--track", "-b", branchName, "origin/"+branchName)
+	if branchExists(branchName) {
+		cmd = exec.Command("git", "worktree", "add", wtPath, branchName)
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		os.Exit(1)
+	}
+
+	clipboard.WriteAll(wtPath)
+	fmt.Println()
+	fmt.Println(SuccessStyle.Render("Worktree created from remote:"), wtPath)
+	fmt.Println(DimStyle.Render("(path copied to clipboard)"))
+}
+
 func getMainWorktreePath() string {
 	out, err := exec.Command("git", "worktree", "list", "--porcelain").Output()
 	if err != nil {
@@ -261,6 +302,8 @@ func Tree() {
 		treePath(args)
 	case "cb":
 		wtCb(args)
+	case "co":
+		wtCo(args)
 	case "ls":
 		wtLs()
 	case "rm":
@@ -279,6 +322,7 @@ func treeHelp() {
 	fmt.Println()
 	fmt.Println("  gitme tree path [<path>]   Show or set worktrees path for this project")
 	fmt.Println("  gitme tree cb <branch>     Create a worktree branch (copies path to clipboard)")
+	fmt.Println("  gitme tree co <branch>     Checkout a remote branch as a worktree")
 	fmt.Println("  gitme tree ls              List all worktrees")
 	fmt.Println("  gitme tree rm <name|path>  Remove a worktree")
 	fmt.Println("  gitme tree rm --all        Remove all worktrees (keeps main repo)")
